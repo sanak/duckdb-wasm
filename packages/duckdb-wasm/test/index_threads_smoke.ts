@@ -51,6 +51,25 @@ describe('threads bundle smoke', () => {
             const r = await one(`SELECT count(*)::INTEGER AS c FROM parquet_scan('studenten.parquet')`);
             expect(r.c).toEqual(8);
         });
+        await timed('failed extension load keeps the loader error', async () => {
+            // A wasm header without a dylink section, then a zeroed metadata footer: dlopen fails on the main
+            // runtime thread, and the query thread has to report the reason
+            const bytes = new Uint8Array(8 + 512);
+            bytes.set([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
+            const url = URL.createObjectURL(new Blob([bytes], { type: 'application/wasm' }));
+            await conn.query(`SET allow_extensions_metadata_mismatch = true`);
+            let message = 'LOAD of a broken extension succeeded';
+            try {
+                await conn.query(`LOAD '${url}#broken.duckdb_extension.wasm'`);
+            } catch (e: any) {
+                message = e.message;
+            } finally {
+                URL.revokeObjectURL(url);
+                await conn.query(`RESET allow_extensions_metadata_mismatch`);
+            }
+            stage(`load error: ${message}`);
+            expect(message).toMatch(/could not be loaded: \S/);
+        });
         await timed('spill', async () => {
             await conn.query(`SET memory_limit = '128MB'`);
             const r = await one(`SELECT count(*)::INTEGER AS cnt FROM (SELECT i, repeat('x', 100) || i::VARCHAR AS s FROM range(1000000) t(i) ORDER BY s)`);

@@ -216,11 +216,19 @@ bool WasmExtensionProvider::TryInitialLoad(DatabaseInstance& db, FileSystem& fs,
         }
     }
 
-    auto lib_hdl = main_thread::OnMainThread(
-        [&] { return OpenFetchedExtension(fetched, "/" + extension_name + EXTENSION_SUFFIX); });
-    if (!lib_hdl) {
-        throw IOException("Extension \"%s\" could not be loaded: %s", url, GetLibraryError());
+    // dlerror() is thread local: read it on the thread that ran dlopen, not on the query thread
+    struct OpenedExtension {
+        void* handle;
+        string error;
+    };
+    auto opened = main_thread::OnMainThread([&] {
+        auto handle = OpenFetchedExtension(fetched, "/" + extension_name + EXTENSION_SUFFIX);
+        return OpenedExtension{handle, handle ? string() : GetLibraryError()};
+    });
+    if (!opened.handle) {
+        throw IOException("Extension \"%s\" could not be loaded: %s", url, opened.error);
     }
+    auto lib_hdl = opened.handle;
 
     result.filebase = extension_name;
     result.filename = url;
